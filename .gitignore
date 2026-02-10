@@ -1,0 +1,8 @@
+/node_modules
+.env
+.DS_Store
+.vscode
+/storage
+logs/
+   combined.log
+   errors.log
