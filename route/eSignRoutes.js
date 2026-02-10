@@ -12,7 +12,7 @@ route.post("/generate-template", eSignController.generate_template);
 route.get("/envelopes/getFiles", verification.verifyJWT, eSignController.readEnvelopeByToken);
 route.post("/envelopes/complete", verification.verifyJWT, eSignController.completeEnvelope);
 route.post("/envelopes/cancel", verification.verifyJWT, eSignController.cancelEnvelope);
-route.post("/envelopeDetails", eSignController.envelopeDetails);
+route.post("/envelopeDetails", eSignController.envelopeDetails); 
 route.post("/resentEnvelope", eSignController.resentEnvelope);
 
 route.post("/uploadImg", eSignController.uploadImg);
