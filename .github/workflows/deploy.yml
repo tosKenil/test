@@ -13,13 +13,14 @@ jobs:
 
       - name: Sync to Live Folder
         run: |
-          # Copy from runner workspace to your project folder
-          sudo cp -r . /home/backend/test/
+          # Copy files from the runner's workspace to your live folder
+          cp -r . /home/backend/test/
           cd /home/backend/test/
-          sudo npm install
+          # No sudo needed after running chown
+          npm install
 
       - name: Restart PM2
         run: |
           cd /home/backend/test/
-          # Restarts the existing process so your changes show in the browser
+          # Restart the app so the new changes show in the browser
           pm2 restart ttsign || pm2 start server.js --name ttsign
