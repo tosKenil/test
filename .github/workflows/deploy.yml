@@ -1,8 +1,8 @@
-name: Node.js CD
+name: Node.js CD - PM2
 
 on:
   push:
-    branches: [ 'main' ]
+    branches: [ 'main' ] # Change this to 'production' if that is your branch name
 
 jobs:
   deploy:
@@ -11,15 +11,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Sync to Live Folder
+      - name: Sync to Project Folder
+        # Using rsync ensures we don't get permission errors on the .git folder
         run: |
-          # Moves files while ignoring Git internals to avoid permission errors
           rsync -av --exclude='.git' . /home/backend/test/
           cd /home/backend/test/
           npm install
 
-      - name: Restart PM2
+      - name: Restart Application with PM2
         run: |
           cd /home/backend/test/
-          # Force PM2 to reload the files from the disk into memory
-          pm2 restart ttsign || pm2 start server.js --name ttsign
+          # 'reload' provides zero-downtime; if the process is new, it will 'start'
+          pm2 reload ttsign --update-env || pm2 start server.js --name ttsign
