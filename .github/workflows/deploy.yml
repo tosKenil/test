@@ -25,18 +25,16 @@ jobs:
       - name: Deploy with PM2
         run: |
           # 1. Sync workspace files to the live app directory
-          # We use -rf to copy everything and overwrite existing files
+          # Using -rf to copy everything and overwrite without prompts
           sudo cp -rf $GITHUB_WORKSPACE/* /home/ttSign/test/
           
-          # 2. Navigate to the live folder
+          # 2. Navigate to the live folder and update production packages
           cd /home/ttSign/test
-          
-          # 3. Ensure dependencies are up to date in the live folder
-          npm install --production
+          sudo npm install --production
 
-          # 4. Reload the app for zero-downtime
-          # This tries to reload; if the app isn't running, it starts it
-          pm2 reload ttSign --update-env || pm2 start server.js --name "ttSign"
+          # 3. Reload the app for zero-downtime
+          # If 'ttSign' is running, it reloads. Otherwise, it starts.
+          sudo pm2 reload ttSign --update-env || sudo pm2 start server.js --name "ttSign"
           
-          # 5. Save state for system reboots
-          pm2 save
+          # 4. Save state for system reboots
+          sudo pm2 save
