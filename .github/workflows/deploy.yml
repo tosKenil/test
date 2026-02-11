@@ -16,4 +16,4 @@ jobs:
 
       - name: Restart Server
         # This updates the code and tells PM2 to refresh the app
-        run: pm2 restart ttSign-backend || pm2 start server.js --name ttSign-backend
+        run: pm2 restart ttsign || pm2 start server.js --name ttsign
