@@ -2,7 +2,7 @@ name: Node.js CD
 
 on:
   push:
-    branches: [ 'main' ] # Check if your branch is 'main' or 'master'
+    branches: [ 'main' ]
 
 jobs:
   deploy:
@@ -11,9 +11,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Sync Code to Project Folder
+        # This moves the new code from the runner folder to your live folder
+        run: |
+          sudo rsync -va . /home/backend/test/
+          cd /home/backend/test/
+          sudo npm install
 
       - name: Restart Server
-        # This updates the code and tells PM2 to refresh the app
-        run: pm2 restart ttsign || pm2 start server.js --name ttsign
+        run: |
+          cd /home/backend/test/
+          pm2 restart ttsign || pm2 start server.js --name ttsign
