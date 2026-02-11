@@ -13,14 +13,14 @@ jobs:
 
       - name: Sync to Live Folder
         run: |
-          # Copy files from the runner workspace to your project folder
-          cp -r . /home/backend/test/
+          # Use rsync to copy only necessary files and exclude .git
+          # This prevents the "Permission denied" error
+          rsync -av --exclude='.git' . /home/backend/test/
           cd /home/backend/test/
-          # Install dependencies without needing sudo
           npm install
 
       - name: Restart PM2
         run: |
           cd /home/backend/test/
-          # Restart the specific ttsign process to apply changes
+          # Restart the ttsign process that is currently online
           pm2 restart ttsign || pm2 start server.js --name ttsign
