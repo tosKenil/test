@@ -11,14 +11,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Sync Code to Project Folder
-        # This moves the new code from the runner folder to your live folder
+      - name: Sync to Live Folder
         run: |
-          sudo rsync -va . /home/backend/test/
+          # Copy from runner workspace to your project folder
+          sudo cp -r . /home/backend/test/
           cd /home/backend/test/
           sudo npm install
 
-      - name: Restart Server
+      - name: Restart PM2
         run: |
           cd /home/backend/test/
+          # Restarts the existing process so your changes show in the browser
           pm2 restart ttsign || pm2 start server.js --name ttsign
