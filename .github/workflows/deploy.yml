@@ -24,3 +24,4 @@ jobs:
           cd /home/backend/test/
           # Restart the ttsign process that is currently online
           pm2 restart ttsign || pm2 start server.js --name ttsign
+          
