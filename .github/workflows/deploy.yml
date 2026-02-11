@@ -2,7 +2,7 @@ name: Node.js CI main (PM2 Deployment)
 
 on:
   push:
-    branches: ['main']
+    branches: ["main"]
 
 jobs:
   deploy:
@@ -16,8 +16,8 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.x'
-          cache: 'npm'
+          node-version: "22.x"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm install
@@ -26,13 +26,13 @@ jobs:
         run: |
           # 1. Sync files to the app folder
           sudo cp -rf $GITHUB_WORKSPACE/* /home/ttSign/test/
-          
+
           # 2. Navigate and install production dependencies
           cd /home/ttSign/test
           sudo npm install --production
 
-          # 3. Reload the app
-          sudo pm2 reload ttSign --update-env || sudo pm2 start server.js --name "ttSign"
-          
+          # 3. Reload the app using the full path to PM2
+          sudo /usr/local/bin/pm2 reload ttSign --update-env || sudo /usr/local/bin/pm2 start server.js --name "ttSign"
+
           # 4. Save PM2 state
-          sudo pm2 save
+          sudo /usr/local/bin/pm2 save
