@@ -1,25 +1,42 @@
-name: Node.js CD - Production
+name: Node.js CI main (PM2 Deployment)
 
 on:
   push:
-    branches: [ 'main' ]
+    branches: ['main']
 
 jobs:
   deploy:
     runs-on: self-hosted
+    timeout-minutes: 5
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Deploy to Live Folder
-        run: |
-          # Use rsync to copy only code files (ignores .git)
-          rsync -av --exclude='.git' . /home/backend/test/
-          cd /home/backend/test/
-          npm install
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: 'npm'
 
-      - name: Restart PM2
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy with PM2
         run: |
-          cd /home/backend/test/
-          # Reload the specific file to apply changes
-          pm2 restart ttsign || pm2 start server.js --name ttsign
+          # 1. Sync workspace files to the live app directory
+          # We use -rf to copy everything and overwrite existing files
+          sudo cp -rf $GITHUB_WORKSPACE/* /home/ttSign/test/
+          
+          # 2. Navigate to the live folder
+          cd /home/ttSign/test
+          
+          # 3. Ensure dependencies are up to date in the live folder
+          npm install --production
+
+          # 4. Reload the app for zero-downtime
+          # This tries to reload; if the app isn't running, it starts it
+          pm2 reload ttSign --update-env || pm2 start server.js --name "ttSign"
+          
+          # 5. Save state for system reboots
           pm2 save
