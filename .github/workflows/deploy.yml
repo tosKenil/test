@@ -1,21 +1,19 @@
-name: Deploy to Azure
+name: Node.js CD
+
 on:
   push:
-    branches:
-      - main
+    branches: [ 'main' ] # Check if your branch is 'main' or 'master'
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - name: SSH into VM and Pull Code (Password Auth)
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ 74.225.251.4 }}
-          username: ${{ ttSign }}
-          password: ${{ Theocenstudios@2580 }}
-          script: |
-            cd /home/backend/test/
-            git pull origin main
-            npm install
-            pm2 restart ttSign-backend
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Restart Server
+        # This updates the code and tells PM2 to refresh the app
+        run: pm2 restart ttSign-backend || pm2 start server.js --name ttSign-backend
