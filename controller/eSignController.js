@@ -469,30 +469,67 @@ eSignController.completeEnvelope = async (req, res) => {
             browser = await puppeteer.launch({ args: ["--no-sandbox"] });
         } else {
             browser = await puppeteer_core.launch({
-                args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox"],
-                defaultViewport: chromium.defaultViewport,
-                executablePath: await chromium.executablePath(),
-                headless: chromium.headless,
-            });
-        }
+                    args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox"],
+                    defaultViewport: chromium.defaultViewport,
+                    executablePath: await chromium.executablePath(),
+                    headless: chromium.headless,
+                });
+            }
 
         const datePart = `${getCurrentDayInNumber()}-${getCurrentMonth()}-${getCurrentYear()}`;
 
-        // --------------- PER-TEMPLATE SIGNED PDF (signedTemplatePdf) ---------------
-        for (let i = 0; i < env.files.length; i++) {
-            const file = env.files[i];
-            const singleHtml = (file.html || "").trim();
-            if (!singleHtml) continue;
+            // --------------- PER-TEMPLATE SIGNED PDF (signedTemplatePdf) ---------------
+            for (let i = 0; i < env.files.length; i++) {
+                const file = env.files[i];
+                const singleHtml = (file.html || "").trim();
+                if (!singleHtml) continue;
 
-            // Wrap single template into full HTML (reuse your builder)
-            const singleFullHtml = buildFullPdfHtml([singleHtml]);
+                // Wrap single template into full HTML (reuse your builder)
+                const singleFullHtml = buildFullPdfHtml([singleHtml]);
 
-            const page = await browser.newPage();
-            await page.setContent(singleFullHtml, {
+                const page = await browser.newPage();
+                await page.setContent(singleFullHtml, {
+                    waitUntil: "networkidle0",
+                });
+
+                const singlePdfBuffer = await page.pdf({
+                    format: "A4",
+                    printBackground: true,
+                    margin: {
+                        top: "15mm",
+                        right: "15mm",
+                        bottom: "15mm",
+                        left: "15mm",
+                    },
+                });
+
+                await page.close();
+
+                // Optionally add header with Envelope ID to each per-template PDF as well
+                const singlePdfWithHeader = await addHeaderToPdf(singlePdfBuffer, env._id);
+
+                const singleName = `${datePart}_${Date.now()}_signed-template-${i + 1}.pdf`;
+
+                await AwsFileUpload.uploadToSpaces({
+                    fileData: singlePdfWithHeader,
+                    filename: singleName,
+                    filepath: ESIGN_SIGNED_PATH,
+                    mimetype: "application/pdf",
+                });
+
+                // ✅ only set signedTemplatePdf, keep everything else unchanged
+                file.signedTemplatePdf = singleName;
+            }
+
+            // --------------- MERGED SIGNED PDF (env.signedPdf ONLY) ---------------
+            const fullHtml = buildFullPdfHtml(htmlParts);
+
+            const mergedPage = await browser.newPage();
+            await mergedPage.setContent(fullHtml, {
                 waitUntil: "networkidle0",
             });
 
-            const singlePdfBuffer = await page.pdf({
+            const mergedPdfBuffer = await mergedPage.pdf({
                 format: "A4",
                 printBackground: true,
                 margin: {
@@ -503,261 +540,224 @@ eSignController.completeEnvelope = async (req, res) => {
                 },
             });
 
-            await page.close();
+            await mergedPage.close();
 
-            // Optionally add header with Envelope ID to each per-template PDF as well
-            const singlePdfWithHeader = await addHeaderToPdf(singlePdfBuffer, env._id);
+            const mergedPdfWithHeader = await addHeaderToPdf(mergedPdfBuffer, env._id);
 
-            const singleName = `${datePart}_${Date.now()}_signed-template-${i + 1}.pdf`;
+            const mergedOutputName = `${datePart}_${Date.now()}_merged-signed.pdf`;
+            const mergedSignedKey = mergedOutputName;
 
             await AwsFileUpload.uploadToSpaces({
-                fileData: singlePdfWithHeader,
-                filename: singleName,
+                fileData: mergedPdfWithHeader,
+                filename: mergedOutputName,
                 filepath: ESIGN_SIGNED_PATH,
                 mimetype: "application/pdf",
             });
 
-            // ✅ only set signedTemplatePdf, keep everything else unchanged
-            file.signedTemplatePdf = singleName;
+            // ✅ env.signedPdf = merged signed PDF ONLY
+            env.signedPdf = mergedSignedKey;
+
+            // (We do NOT touch storedName/publicUrl/templatePdf on files now)
+
+            // --------------- Update signer & envelope status ---------------
+            env.signers[idx].status = SIGN_EVENTS.COMPLETED;
+            env.signers[idx].completedAt = new Date();
+            env.signers[idx].signedUrl = mergedSignedKey; // or full URL if you like
+            env.signers[idx].location = location || {};
+            env.signers[idx].ipAddress = normalizeIP(req) || "";
+
+            if (env.signers.every((s) => s.status === SIGN_EVENTS.COMPLETED)) {
+                env.documentStatus = SIGN_EVENTS.COMPLETED;
+            }
+
+            const envelopeData = await env.save();
+
+            const setEnv = await setEnvelopeData(envelopeData._id, SIGN_EVENTS.COMPLETED);
+            await triggerWebhookEvent(SIGN_EVENTS.COMPLETED, STATICUSERID, setEnv);
+
+            // --------------- Completed email ---------------
+            const completeTemplatePath = path.join(
+                __dirname,
+                "../public/template/completed.html"
+            );
+            let completeEmailTemplate = fs.readFileSync(completeTemplatePath, "utf8");
+
+            const documentName =
+                env.files?.[0]?.filename ||
+                env.files?.[0]?.storedName ||
+                "Completed Document";
+
+            const completedUrl = `${SIGNING_WEB_URL}/documents?type=${req.query.type}`;
+
+
+            let emailHtml = completeEmailTemplate
+                .replace(/{{completedUrl}}/g, completedUrl)
+                .replace(/{{documentName}}/g, documentName);
+
+            const subject = "Tianlong Document Completed: Review The Document";
+
+            await sendMail(env.signers[idx].email, subject, emailHtml);
+
+            // global.io.to(envelopeId.toString()).emit('reloadPage', { resData: "reloadPage" });
+
+            return res.json({
+                status: true,
+                message: "Envelope completed successfully",
+                downloadUrl: completedUrl,
+                envelopeId: String(env._id),
+                signerIndex: idx,
+                signerEmail: env.signers[idx].email,
+                documentStatus: env.documentStatus,
+                files: env.files, // you can see templatePdf + signedTemplatePdf per file
+                signedPdf: mergedSignedKey,
+            });
+        } catch (err) {
+            console.error(
+                "Error in /api/envelopes/complete",
+                err && err.stack ? err.stack : err
+            );
+            return res
+                .status(500)
+                .json({ error: err?.message || "Envelope completion failed" });
+        } finally {
+            if (browser) {
+                try {
+                    await browser.close();
+                } catch (e) {
+                    console.error("Error closing Puppeteer browser", e);
+                }
+            }
+        }
+    };
+
+
+    eSignController.cancelEnvelope = async (req, res) => {
+        let env = await Envelope.findById(req.envId);
+        if (!env) return res.status(404).json({ error: "Envelope not found" });
+
+        env.documentStatus = SIGN_EVENTS.AVOIDED;
+        env.signers = env.signers.map((s) => ({
+            ...s.toObject(),
+            status: SIGN_EVENTS.AVOIDED,
+        }));
+        await env.save();
+
+        const setEnv = await setEnvelopeData(env._id, SIGN_EVENTS.AVOIDED)
+        await triggerWebhookEvent(SIGN_EVENTS.AVOIDED, STATICUSERID, setEnv)
+
+        res.json({
+            status: true,
+            message: "Cancelled successfully",
+            envelopeId: String(env._id),
+        });
+    };
+
+    eSignController.envelopeDetails = async (req, res) => {
+
+        const { envId } = req.body;
+
+        let env = await Envelope.findById(envId);
+        if (!env) return res.status(404).json({ error: "Envelope not found" });
+
+        env.pdf = env.pdf ? `${SPACES_PUBLIC_URL}/storage/pdf/${env.pdf}` : null;
+        env.signedPdf = env.signedPdf ? `${SPACES_PUBLIC_URL}/storage/signed/${env.signedPdf}` : null;
+
+        if (Array.isArray(env.signers)) {
+            if (env.signers && Array.isArray(env.signers)) {
+                env.signers = env.signers.map((signer) => ({
+                    ...signer,
+                    fileUrl: signer.file ? `${SPACES_PUBLIC_URL}/storage/signed/${signer.file}` : null,
+                }));
+            }
         }
 
-        // --------------- MERGED SIGNED PDF (env.signedPdf ONLY) ---------------
-        const fullHtml = buildFullPdfHtml(htmlParts);
-
-        const mergedPage = await browser.newPage();
-        await mergedPage.setContent(fullHtml, {
-            waitUntil: "networkidle0",
-        });
-
-        const mergedPdfBuffer = await mergedPage.pdf({
-            format: "A4",
-            printBackground: true,
-            margin: {
-                top: "15mm",
-                right: "15mm",
-                bottom: "15mm",
-                left: "15mm",
-            },
-        });
-
-        await mergedPage.close();
-
-        const mergedPdfWithHeader = await addHeaderToPdf(mergedPdfBuffer, env._id);
-
-        const mergedOutputName = `${datePart}_${Date.now()}_merged-signed.pdf`;
-        const mergedSignedKey = mergedOutputName;
-
-        await AwsFileUpload.uploadToSpaces({
-            fileData: mergedPdfWithHeader,
-            filename: mergedOutputName,
-            filepath: ESIGN_SIGNED_PATH,
-            mimetype: "application/pdf",
-        });
-
-        // ✅ env.signedPdf = merged signed PDF ONLY
-        env.signedPdf = mergedSignedKey;
-
-        // (We do NOT touch storedName/publicUrl/templatePdf on files now)
-
-        // --------------- Update signer & envelope status ---------------
-        env.signers[idx].status = SIGN_EVENTS.COMPLETED;
-        env.signers[idx].completedAt = new Date();
-        env.signers[idx].signedUrl = mergedSignedKey; // or full URL if you like
-        env.signers[idx].location = location || {};
-        env.signers[idx].ipAddress = normalizeIP(req) || "";
-
-        if (env.signers.every((s) => s.status === SIGN_EVENTS.COMPLETED)) {
-            env.documentStatus = SIGN_EVENTS.COMPLETED;
+        if (Array.isArray(env.files)) {
+            env.files = env.files.map((file) => ({
+                ...file,
+                publicUrl: file.publicUrl ? `${SPACES_PUBLIC_URL}/storage/originals/${file.publicUrl}` : null,
+                templatePdf: file.templatePdf ? `${SPACES_PUBLIC_URL}/storage/pdf/${file.templatePdf}` : null,
+                signedTemplatePdf: file.signedTemplatePdf ? `${SPACES_PUBLIC_URL}/storage/signed/${file.signedTemplatePdf}` : null,
+            }));
         }
 
-        const envelopeData = await env.save();
+        env._doc.completedAt = env?.documentStatus == SIGN_EVENTS.COMPLETED ? env.updatedAt : null;
 
-        const setEnv = await setEnvelopeData(envelopeData._id, SIGN_EVENTS.COMPLETED);
-        await triggerWebhookEvent(SIGN_EVENTS.COMPLETED, STATICUSERID, setEnv);
+        res.json({
+            status: true,
+            message: "Envelope details fetched successfully",
+            envelopeId: env,
+        });
+    };
 
-        // --------------- Completed email ---------------
-        const completeTemplatePath = path.join(
-            __dirname,
-            "../public/template/completed.html"
-        );
-        let completeEmailTemplate = fs.readFileSync(completeTemplatePath, "utf8");
+    eSignController.resentEnvelope = async (req, res) => {
 
-        const documentName =
-            env.files?.[0]?.filename ||
-            env.files?.[0]?.storedName ||
-            "Completed Document";
+        const { envId } = req.body;
 
-        const completedUrl = `${SIGNING_WEB_URL}/documents?type=${req.query.type}`;
+        let env = await Envelope.findById(envId);
+        if (!env) return res.status(404).json({ error: "Envelope not found" });
+
+        const firstFile = env.files?.[0];
+        const docName = firstFile?.filename || "Document";
+
+        let mailSentCount = 0;
+
+        const templatePath = path.join(__dirname, "../public/template/sendDocument.html");
+        const emailTemplateRaw = fs.readFileSync(templatePath, "utf8");
+
+        for (const signer of env.signers) {
+            // send mail only if signer not completed
+            if (signer.status !== SIGN_EVENTS.COMPLETED) {
+                const tokenUrl = signer.tokenUrl;
+
+                const emailHtml = emailTemplateRaw
+                    .replace(/{{name}}/g, signer.name)
+                    .replace(/{{signUrl}}/g, tokenUrl)
+                    .replace(/{{DocumentName}}/g, docName);
+
+                const subject = "Please sign the document";
+                await Envelope.updateOne(
+                    { _id: env._id, "signers.email": signer.email },
+                    { $set: { "signers.$.sentAt": new Date(), "signers.$.status": SIGN_EVENTS.SENT } }
+                );
+
+                // also check and update documentStatus if needed
+                if (env.documentStatus !== SIGN_EVENTS.SENT) {
+                    env.documentStatus = SIGN_EVENTS.SENT;
+                    await env.save();
+                }
 
 
-        let emailHtml = completeEmailTemplate
-            .replace(/{{completedUrl}}/g, completedUrl)
-            .replace(/{{documentName}}/g, documentName);
-
-        const subject = "Tianlong Document Completed: Review The Document";
-
-        await sendMail(env.signers[idx].email, subject, emailHtml);
-
-        // global.io.to(envelopeId.toString()).emit('reloadPage', { resData: "reloadPage" });
+                await sendMail(signer.email, subject, emailHtml);
+                mailSentCount++;
+            }
+        }
 
         return res.json({
             status: true,
-            message: "Envelope completed successfully",
-            downloadUrl: completedUrl,
-            envelopeId: String(env._id),
-            signerIndex: idx,
-            signerEmail: env.signers[idx].email,
-            documentStatus: env.documentStatus,
-            files: env.files, // you can see templatePdf + signedTemplatePdf per file
-            signedPdf: mergedSignedKey,
+            message: "Envelope resent successfully",
+            envelopeId: env?._id,
         });
-    } catch (err) {
-        console.error(
-            "Error in /api/envelopes/complete",
-            err && err.stack ? err.stack : err
-        );
-        return res
-            .status(500)
-            .json({ error: err?.message || "Envelope completion failed" });
-    } finally {
-        if (browser) {
-            try {
-                await browser.close();
-            } catch (e) {
-                console.error("Error closing Puppeteer browser", e);
-            }
-        }
-    }
-};
+    };
 
+    eSignController.uploadImg = async (req, res) => {
 
-eSignController.cancelEnvelope = async (req, res) => {
-    let env = await Envelope.findById(req.envId);
-    if (!env) return res.status(404).json({ error: "Envelope not found" });
+        const files = req.files;
+        let s3Directory = ESIGN_PDF_PATH;
 
-    env.documentStatus = SIGN_EVENTS.AVOIDED;
-    env.signers = env.signers.map((s) => ({
-        ...s.toObject(),
-        status: SIGN_EVENTS.AVOIDED,
-    }));
-    await env.save();
+        let imgPath = `${Date.now()}.${files.file.name.substr(files.file.name.lastIndexOf('.') + 1)}`;
 
-    const setEnv = await setEnvelopeData(env._id, SIGN_EVENTS.AVOIDED)
-    await triggerWebhookEvent(SIGN_EVENTS.AVOIDED, STATICUSERID, setEnv)
+        await AwsFileUpload.uploadToSpaces({
+            fileData: files.file.data,
+            filename: imgPath,
+            filepath: s3Directory,
+            mimetype: files.file.mimetype
+        });
 
-    res.json({
-        status: true,
-        message: "Cancelled successfully",
-        envelopeId: String(env._id),
-    });
-};
+        return res.json({
+            status: true,
+            message: "Cancelled successfully",
+            url: process.env.SPACES_PUBLIC_URL + DIRECTORIES.PDF_DIRECTORY + imgPath
+        });
+    };
 
-eSignController.envelopeDetails = async (req, res) => {
-
-    const { envId } = req.body;
-
-    let env = await Envelope.findById(envId);
-    if (!env) return res.status(404).json({ error: "Envelope not found" });
-
-    env.pdf = env.pdf ? `${SPACES_PUBLIC_URL}/storage/pdf/${env.pdf}` : null;
-    env.signedPdf = env.signedPdf ? `${SPACES_PUBLIC_URL}/storage/signed/${env.signedPdf}` : null;
-
-    if (Array.isArray(env.signers)) {
-        if (env.signers && Array.isArray(env.signers)) {
-            env.signers = env.signers.map((signer) => ({
-                ...signer,
-                fileUrl: signer.file ? `${SPACES_PUBLIC_URL}/storage/signed/${signer.file}` : null,
-            }));
-        }
-    }
-
-    if (Array.isArray(env.files)) {
-        env.files = env.files.map((file) => ({
-            ...file,
-            publicUrl: file.publicUrl ? `${SPACES_PUBLIC_URL}/storage/originals/${file.publicUrl}` : null,
-            templatePdf: file.templatePdf ? `${SPACES_PUBLIC_URL}/storage/pdf/${file.templatePdf}` : null,
-            signedTemplatePdf: file.signedTemplatePdf ? `${SPACES_PUBLIC_URL}/storage/signed/${file.signedTemplatePdf}` : null,
-        }));
-    }
-
-    env._doc.completedAt = env?.documentStatus == SIGN_EVENTS.COMPLETED ? env.updatedAt : null;
-
-    res.json({
-        status: true,
-        message: "Envelope details fetched successfully",
-        envelopeId: env,
-    });
-};
-
-eSignController.resentEnvelope = async (req, res) => {
-
-    const { envId } = req.body;
-
-    let env = await Envelope.findById(envId);
-    if (!env) return res.status(404).json({ error: "Envelope not found" });
-
-    const firstFile = env.files?.[0];
-    const docName = firstFile?.filename || "Document";
-
-    let mailSentCount = 0;
-
-    const templatePath = path.join(__dirname, "../public/template/sendDocument.html");
-    const emailTemplateRaw = fs.readFileSync(templatePath, "utf8");
-
-    for (const signer of env.signers) {
-        // send mail only if signer not completed
-        if (signer.status !== SIGN_EVENTS.COMPLETED) {
-            const tokenUrl = signer.tokenUrl;
-
-            const emailHtml = emailTemplateRaw
-                .replace(/{{name}}/g, signer.name)
-                .replace(/{{signUrl}}/g, tokenUrl)
-                .replace(/{{DocumentName}}/g, docName);
-
-            const subject = "Please sign the document";
-            await Envelope.updateOne(
-                { _id: env._id, "signers.email": signer.email },
-                { $set: { "signers.$.sentAt": new Date(), "signers.$.status": SIGN_EVENTS.SENT } }
-            );
-
-            // also check and update documentStatus if needed
-            if (env.documentStatus !== SIGN_EVENTS.SENT) {
-                env.documentStatus = SIGN_EVENTS.SENT;
-                await env.save();
-            }
-
-
-            await sendMail(signer.email, subject, emailHtml);
-            mailSentCount++;
-        }
-    }
-
-    return res.json({
-        status: true,
-        message: "Envelope resent successfully",
-        envelopeId: env?._id,
-    });
-};
-
-eSignController.uploadImg = async (req, res) => {
-
-    const files = req.files;
-    let s3Directory = ESIGN_PDF_PATH;
-
-    let imgPath = `${Date.now()}.${files.file.name.substr(files.file.name.lastIndexOf('.') + 1)}`;
-
-    await AwsFileUpload.uploadToSpaces({
-        fileData: files.file.data,
-        filename: imgPath,
-        filepath: s3Directory,
-        mimetype: files.file.mimetype
-    });
-
-    return res.json({
-        status: true,
-        message: "Cancelled successfully",
-        url: process.env.SPACES_PUBLIC_URL + DIRECTORIES.PDF_DIRECTORY + imgPath
-    });
-};
-
-module.exports = eSignController;
+    module.exports = eSignController;
