@@ -64,7 +64,7 @@ app.get("/", (req, res) => {
 const { verifyApiKey } = require("./middleware/helper");
 
 if (process.env.ACCESS_API_KEY == true || process.env.ACCESS_API_KEY === "true") {
-    app.use("/api", verifyApiKey );
+    app.use("/api", verifyApiKey);
 }
 
 // const loggerMiddleware = require('./middleware/loggerMiddleware');
