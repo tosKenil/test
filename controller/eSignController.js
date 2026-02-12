@@ -287,8 +287,8 @@ eSignController.generate_template = async (req, res) => {
             // mergedPdfUrl: mergedPublicUrl,
         });
     } catch (e) {
-        console.error("🔥 Error in generate_template:", e);
-        return res.status(500).json({ error: "Generation failed" });
+        console.log("🔥 Error in generate_template:", e.message);
+        return res.status(500).json({ error: e + "Generation failed" });
     }
 };
 
